@@ -1,14 +1,45 @@
 # =====================================================================
-# UNIVERSAL URL CONNECTIVITY + SSL RESET TOOL v4
-# GitHub-hosted PowerShell. Target URL/domain is entered manually.
-# Windows PowerShell 5.1 compatible.
+# UNIVERSAL URL CONNECTIVITY + SSL RESET TOOL
+# - GitHub-hosted script; target URL/domain is entered manually
+# - Enter any URL or domain at runtime
+# - Run as Administrator
+# - Flushes DNS cache
+# - Clears Windows SSL state
+# - Clears certificate URL cache
+# - Clears browser SSL/HSTS/cache data
+# - Optional Google DNS reset
+# - Resets Winsock/TCP/IP and WinHTTP proxy
+# - Tests DNS + HTTP/HTTPS ports
+# - Opens the entered URL
 # =====================================================================
 
 param(
     [string]$Target = ""
 )
 
-$ErrorActionPreference = "Continue"
+function Normalize-Target {
+    param([string]$InputText)
+
+    $value = ($InputText | ForEach-Object { $_.Trim() })
+    if ([string]::IsNullOrWhiteSpace($value)) { return $null }
+
+    # Remove surrounding quotes
+    $value = $value.Trim('"').Trim("'")
+
+    # If only a domain is given, default to https://
+    if ($value -notmatch '^[a-zA-Z][a-zA-Z0-9+.-]*://') {
+        $value = "https://$value"
+    }
+
+    try {
+        $uri = [System.Uri]$value
+        if ([string]::IsNullOrWhiteSpace($uri.Host)) { return $null }
+        return $uri
+    }
+    catch {
+        return $null
+    }
+}
 
 function Write-Step {
     param([string]$Text)
@@ -16,117 +47,23 @@ function Write-Step {
     Write-Host $Text -ForegroundColor Cyan
 }
 
-function Write-Ok {
-    param([string]$Text)
-    Write-Host "  OK   $Text" -ForegroundColor Green
-}
-
-function Write-Skip {
-    param([string]$Text)
-    Write-Host "  SKIP $Text" -ForegroundColor DarkYellow
-}
-
-function Normalize-Target {
-    param([string]$InputText)
-
-    if ([string]::IsNullOrWhiteSpace($InputText)) {
-        return $null
-    }
-
-    $value = $InputText.Trim().Trim('"').Trim("'")
-
-    if ([string]::IsNullOrWhiteSpace($value)) {
-        return $null
-    }
-
-    # Convert common pasted inputs to a clean URL.
-    $value = $value -replace '^www\.', 'www.'
-
-    # If the user enters only a domain/path, default to HTTPS.
-    if ($value -notmatch '^[a-zA-Z][a-zA-Z0-9+\-.]*://') {
-        $value = "https://$value"
-    }
-
-    $uri = $null
-    if (-not [System.Uri]::TryCreate($value, [System.UriKind]::Absolute, [ref]$uri)) {
-        return $null
-    }
-
-    if ([string]::IsNullOrWhiteSpace($uri.Host)) {
-        return $null
-    }
-
-    if ($uri.Scheme -ne "http" -and $uri.Scheme -ne "https") {
-        return $null
-    }
-
-    return $uri
-}
-
-function Get-TargetPort {
-    param([System.Uri]$Uri)
-
-    if (-not $Uri.IsDefaultPort) {
-        return [int]$Uri.Port
-    }
-
-    if ($Uri.Scheme -eq "http") {
-        return 80
-    }
-
-    return 443
-}
-
-function Test-IsAdmin {
-    try {
-        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-        return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-    }
-    catch {
-        return $false
-    }
-}
-
-function Invoke-SafeCommand {
-    param(
-        [string]$Label,
-        [scriptblock]$Command
-    )
-
-    try {
-        & $Command
-        Write-Ok $Label
-    }
-    catch {
-        Write-Skip ("{0} - {1}" -f $Label, $_.Exception.Message)
-    }
-}
-
-# Self-elevate if someone directly runs the PS1 instead of the BAT.
-if (-not (Test-IsAdmin)) {
-    Write-Host "Requesting Administrator permission..." -ForegroundColor Yellow
-
+# Self-elevate. Preserve optional target argument.
+if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator
+)) {
     $argLine = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     if (-not [string]::IsNullOrWhiteSpace($Target)) {
-        $escapedTarget = $Target.Replace('"', '\"')
-        $argLine = "$argLine -Target `"$escapedTarget`""
+        $safeTarget = $Target.Replace('"','\"')
+        $argLine += " -Target `"$safeTarget`""
     }
-
-    try {
-        Start-Process -FilePath "powershell.exe" -ArgumentList $argLine -Verb RunAs
-    }
-    catch {
-        Write-Host "Failed to relaunch as Administrator: $($_.Exception.Message)" -ForegroundColor Red
-        Read-Host "Press Enter to exit"
-    }
+    Start-Process powershell.exe -ArgumentList $argLine -Verb RunAs
     exit
 }
 
 Clear-Host
 Write-Host ""
-Write-Host "=== UNIVERSAL URL CONNECTIVITY + SSL RESET TOOL v4 ===" -ForegroundColor Green
-Write-Host "Enter any website URL/domain manually. No hardcoded target domain." -ForegroundColor Yellow
+Write-Host "=== UNIVERSAL URL CONNECTIVITY + SSL RESET TOOL ===" -ForegroundColor Green
+Write-Host "GitHub-hosted. Enter any URL/domain manually." -ForegroundColor Yellow
 Write-Host ""
 
 $Uri = Normalize-Target $Target
@@ -134,57 +71,115 @@ while ($null -eq $Uri) {
     $inputUrl = Read-Host "Enter URL or domain, example console.panget.in or https://example.com"
     $Uri = Normalize-Target $inputUrl
     if ($null -eq $Uri) {
-        Write-Host "Invalid URL/domain. Use only http/https website URLs or domains." -ForegroundColor Red
+        Write-Host "Invalid URL/domain. Try again." -ForegroundColor Red
     }
 }
 
 $TargetUrl  = $Uri.AbsoluteUri
 $TargetHost = $Uri.Host
-$TargetPort = Get-TargetPort $Uri
+$TargetPort = if ($Uri.IsDefaultPort) { if ($Uri.Scheme -eq "http") { 80 } else { 443 } } else { $Uri.Port }
 
 Write-Host "Target URL : $TargetUrl" -ForegroundColor Yellow
 Write-Host "Target Host: $TargetHost" -ForegroundColor Yellow
-Write-Host ("Target Port: {0}" -f $TargetPort) -ForegroundColor Yellow
+Write-Host "Target Port: $TargetPort" -ForegroundColor Yellow
 Write-Host ""
 
 $continue = Read-Host "This will close browsers and reset DNS/SSL/network cache. Continue? (Y/N)"
 if ($continue -notmatch '^(y|yes)$') {
     Write-Host "Cancelled." -ForegroundColor Red
-    Read-Host "Press Enter to exit"
+    Start-Sleep -Seconds 1
     exit
 }
 
-$Users = @()
-try {
-    $Users = Get-ChildItem "C:\Users" -Directory -ErrorAction SilentlyContinue | Where-Object {
-        $_.Name -notin @("Public", "Default", "Default User", "All Users", "desktop.ini")
-    }
+$Users = Get-ChildItem C:\Users -Directory -ErrorAction SilentlyContinue |
+Where-Object {
+    $_.Name -notin @("Public", "Default", "Default User", "All Users")
 }
-catch {}
 
-Write-Step "[1/10] Closing browsers..."
-foreach ($browser in @("chrome", "msedge", "firefox", "brave", "opera", "iexplore")) {
-    Stop-Process -Name $browser -Force -ErrorAction SilentlyContinue
+Write-Step "[1/11] Closing browsers..."
+"chrome","msedge","firefox","brave","opera","iexplore" | ForEach-Object {
+    Stop-Process -Name $_ -Force -ErrorAction SilentlyContinue
 }
 Start-Sleep -Seconds 2
-Write-Ok "Browsers closed if they were running"
 
-Write-Step "[2/10] Flushing DNS cache..."
-Invoke-SafeCommand "ipconfig /flushdns" { ipconfig /flushdns | Out-Null }
-Invoke-SafeCommand "Clear-DnsClientCache" { Clear-DnsClientCache -ErrorAction Stop }
-
-Write-Step "[3/10] Resetting Windows SSL state and certificate URL cache..."
-Invoke-SafeCommand "Windows SSL state cleared" {
-    Start-Process -FilePath "rundll32.exe" -ArgumentList "InetCpl.cpl,ClearMyTracksByProcess 8" -Wait -WindowStyle Hidden
+Write-Step "[2/11] Setting Google DNS on active network adapters..."
+try {
+    Get-NetAdapter -ErrorAction Stop |
+    Where-Object { $_.Status -eq "Up" } |
+    ForEach-Object {
+        try {
+            Set-DnsClientServerAddress `
+                -InterfaceIndex $_.InterfaceIndex `
+                -ServerAddresses ("8.8.8.8","8.8.4.4") `
+                -ErrorAction Stop
+            Write-Host "  OK  $($_.Name)"
+        }
+        catch {
+            Write-Host "  SKIP $($_.Name) - $($_.Exception.Message)" -ForegroundColor DarkYellow
+        }
+    }
 }
-Invoke-SafeCommand "Certificate URL cache cleared" {
+catch {
+    Write-Host "  DNS adapter update skipped: $($_.Exception.Message)" -ForegroundColor DarkYellow
+}
+
+Write-Step "[3/11] Enabling Secure DNS / DoH for Chromium browsers..."
+$Policies = @(
+    "HKLM:\SOFTWARE\Policies\Google\Chrome",
+    "HKLM:\SOFTWARE\Policies\Microsoft\Edge",
+    "HKLM:\SOFTWARE\Policies\BraveSoftware\Brave",
+    "HKLM:\SOFTWARE\Policies\Chromium"
+)
+
+foreach ($Policy in $Policies) {
+    try {
+        New-Item $Policy -Force | Out-Null
+        New-ItemProperty -Path $Policy -Name DnsOverHttpsMode -Value secure -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $Policy -Name DnsOverHttpsTemplates -Value "https://dns.google/dns-query" -PropertyType String -Force | Out-Null
+    }
+    catch {}
+}
+
+Write-Step "[4/11] Configuring Firefox Secure DNS..."
+foreach ($User in $Users) {
+    $ProfileRoot = "$($User.FullName)\AppData\Roaming\Mozilla\Firefox\Profiles"
+    if (Test-Path $ProfileRoot) {
+        Get-ChildItem $ProfileRoot -Directory -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            $UserJS = Join-Path $_.FullName "user.js"
+            @'
+user_pref("network.trr.mode", 3);
+user_pref("network.trr.uri", "https://dns.google/dns-query");
+user_pref("network.trr.bootstrapAddress", "8.8.8.8");
+user_pref("network.trr.confirmationNS", "skip");
+'@ | Add-Content $UserJS -Encoding UTF8
+        }
+    }
+}
+
+Write-Step "[5/11] Flushing DNS cache..."
+ipconfig /flushdns | Out-Null
+Clear-DnsClientCache -ErrorAction SilentlyContinue
+Write-Host "  DNS cache flushed"
+
+Write-Step "[6/11] Resetting Windows SSL state and certificate URL cache..."
+try {
+    Start-Process rundll32.exe "InetCpl.cpl,ClearMyTracksByProcess 8" -Wait
+    Write-Host "  Windows SSL state cleared"
+}
+catch {
+    Write-Host "  SSL state clear failed: $($_.Exception.Message)" -ForegroundColor DarkYellow
+}
+
+try {
     certutil -urlcache * delete | Out-Null
+    Write-Host "  Certificate URL cache cleared"
+}
+catch {
+    Write-Host "  Certificate URL cache clear skipped" -ForegroundColor DarkYellow
 }
 
-Write-Step "[4/10] Resetting WinHTTP proxy..."
-Invoke-SafeCommand "WinHTTP proxy reset" { netsh winhttp reset proxy | Out-Null }
-
-Write-Step "[5/10] Clearing browser SSL/HSTS/cache files..."
+Write-Step "[7/11] Clearing browser SSL/HSTS/cache data..."
 foreach ($User in $Users) {
     $Base = $User.FullName
 
@@ -197,9 +192,9 @@ foreach ($User in $Users) {
 
     foreach ($Root in $ChromiumRoots) {
         if (Test-Path $Root) {
-            Get-ChildItem $Root -Directory -ErrorAction SilentlyContinue | Where-Object {
-                $_.Name -eq "Default" -or $_.Name -like "Profile *"
-            } | ForEach-Object {
+            Get-ChildItem $Root -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq "Default" -or $_.Name -like "Profile *" } |
+            ForEach-Object {
                 $Profile = $_.FullName
                 $Items = @(
                     "$Profile\TransportSecurity",
@@ -219,7 +214,8 @@ foreach ($User in $Users) {
 
     $FirefoxLocal = "$Base\AppData\Local\Mozilla\Firefox\Profiles"
     if (Test-Path $FirefoxLocal) {
-        Get-ChildItem $FirefoxLocal -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        Get-ChildItem $FirefoxLocal -Directory -ErrorAction SilentlyContinue |
+        ForEach-Object {
             Remove-Item "$($_.FullName)\cache2\*" -Force -Recurse -ErrorAction SilentlyContinue
             Remove-Item "$($_.FullName)\startupCache\*" -Force -Recurse -ErrorAction SilentlyContinue
         }
@@ -227,111 +223,70 @@ foreach ($User in $Users) {
 
     $FirefoxRoaming = "$Base\AppData\Roaming\Mozilla\Firefox\Profiles"
     if (Test-Path $FirefoxRoaming) {
-        Get-ChildItem $FirefoxRoaming -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        Get-ChildItem $FirefoxRoaming -Directory -ErrorAction SilentlyContinue |
+        ForEach-Object {
             Remove-Item "$($_.FullName)\SiteSecurityServiceState.txt" -Force -ErrorAction SilentlyContinue
         }
     }
 
-    $OperaItems = @(
+    $OperaPaths = @(
         "$Base\AppData\Local\Opera Software\Opera Stable\Cache\*",
         "$Base\AppData\Local\Opera Software\Opera Stable\Code Cache\*",
         "$Base\AppData\Roaming\Opera Software\Opera Stable\TransportSecurity"
     )
-    foreach ($Item in $OperaItems) {
+    foreach ($Item in $OperaPaths) {
         Remove-Item $Item -Force -Recurse -ErrorAction SilentlyContinue
     }
 }
-Write-Ok "Browser SSL/HSTS/cache cleanup completed"
+Write-Host "  Browser SSL/HSTS/cache cleanup completed"
 
-Write-Step "[6/10] Setting Google DNS on active adapters..."
+Write-Step "[8/11] Resetting network stack and WinHTTP proxy..."
+netsh winsock reset | Out-Null
+netsh int ip reset | Out-Null
+netsh winhttp reset proxy | Out-Null
+Write-Host "  Winsock reset completed"
+Write-Host "  TCP/IP reset completed"
+Write-Host "  WinHTTP proxy reset completed"
+
+Write-Step "[9/11] Testing DNS for $TargetHost..."
 try {
-    if (Get-Command Get-NetAdapter -ErrorAction SilentlyContinue) {
-        $Adapters = Get-NetAdapter -ErrorAction Stop | Where-Object { $_.Status -eq "Up" }
-        foreach ($Adapter in $Adapters) {
-            try {
-                Set-DnsClientServerAddress -InterfaceIndex $Adapter.InterfaceIndex -ServerAddresses @("8.8.8.8", "8.8.4.4") -ErrorAction Stop
-                Write-Ok ("DNS set on {0}" -f $Adapter.Name)
-            }
-            catch {
-                Write-Skip ("DNS not changed on {0} - {1}" -f $Adapter.Name, $_.Exception.Message)
-            }
-        }
-    }
-    else {
-        Write-Skip "Get-NetAdapter not available on this Windows version"
-    }
-}
-catch {
-    Write-Skip ("DNS adapter update skipped - {0}" -f $_.Exception.Message)
-}
-
-Write-Step "[7/10] Resetting Winsock and TCP/IP stack..."
-Invoke-SafeCommand "Winsock reset" { netsh winsock reset | Out-Null }
-Invoke-SafeCommand "TCP/IP reset" { netsh int ip reset | Out-Null }
-
-Write-Step "[8/10] Testing DNS for $TargetHost..."
-try {
-    $DNS = $null
-    if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
-        $DNS = Resolve-DnsName $TargetHost -Server 8.8.8.8 -ErrorAction Stop
-        Write-Host "DNS Resolution: OK" -ForegroundColor Green
-        $DNS | Where-Object { $_.IPAddress } | Select-Object -ExpandProperty IPAddress -Unique | ForEach-Object {
-            Write-Host "  IP: $_"
-        }
-    }
-    else {
-        nslookup $TargetHost 8.8.8.8
-    }
+    $DNS = Resolve-DnsName $TargetHost -Server 8.8.8.8 -ErrorAction Stop
+    Write-Host "DNS Resolution: OK" -ForegroundColor Green
+    $DNS |
+    Where-Object {$_.IPAddress} |
+    Select-Object -ExpandProperty IPAddress -Unique |
+    ForEach-Object { Write-Host "  IP: $_" }
 }
 catch {
     Write-Host "DNS Resolution: FAILED" -ForegroundColor Red
-    Write-Host ("  {0}" -f $_.Exception.Message) -ForegroundColor DarkYellow
+    Write-Host "  $($_.Exception.Message)" -ForegroundColor DarkYellow
 }
 
-Write-Step ("[9/10] Testing TCP port {0} for {1}..." -f $TargetPort, $TargetHost)
+Write-Step "[10/11] Testing TCP port $TargetPort for $TargetHost..."
 try {
-    $TcpOk = $false
-    if (Get-Command Test-NetConnection -ErrorAction SilentlyContinue) {
-        $Conn = Test-NetConnection $TargetHost -Port $TargetPort -WarningAction SilentlyContinue
-        $TcpOk = [bool]$Conn.TcpTestSucceeded
+    $Conn = Test-NetConnection $TargetHost -Port $TargetPort -WarningAction SilentlyContinue
+    if ($Conn.TcpTestSucceeded) {
+        Write-Host "TCP Port $TargetPort: OK" -ForegroundColor Green
     }
     else {
-        $Client = New-Object System.Net.Sockets.TcpClient
-        $Async = $Client.BeginConnect($TargetHost, $TargetPort, $null, $null)
-        $TcpOk = $Async.AsyncWaitHandle.WaitOne(5000, $false)
-        if ($TcpOk) { $Client.EndConnect($Async) }
-        $Client.Close()
-    }
-
-    if ($TcpOk) {
-        Write-Host ("TCP Port {0}: OK" -f $TargetPort) -ForegroundColor Green
-    }
-    else {
-        Write-Host ("TCP Port {0}: FAILED" -f $TargetPort) -ForegroundColor Red
+        Write-Host "TCP Port $TargetPort: FAILED" -ForegroundColor Red
     }
 }
 catch {
-    Write-Host ("TCP Port {0}: FAILED" -f $TargetPort) -ForegroundColor Red
-    Write-Host ("  {0}" -f $_.Exception.Message) -ForegroundColor DarkYellow
+    Write-Host "TCP Port Test Failed" -ForegroundColor Red
 }
 
-Write-Step "[10/10] Testing web request and opening target..."
-try {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-}
-catch {}
-
+Write-Step "[11/11] Testing web request and opening target..."
 try {
     $Response = Invoke-WebRequest -Uri $TargetUrl -UseBasicParsing -TimeoutSec 20 -ErrorAction Stop
-    Write-Host ("Web Request: OK, HTTP {0}" -f $Response.StatusCode) -ForegroundColor Green
+    Write-Host "Web Request: OK, HTTP $($Response.StatusCode)" -ForegroundColor Green
 }
 catch {
     Write-Host "Web Request: FAILED" -ForegroundColor Red
-    Write-Host ("  {0}" -f $_.Exception.Message) -ForegroundColor DarkYellow
+    Write-Host "  $($_.Exception.Message)" -ForegroundColor DarkYellow
     Write-Host ""
-    Write-Host "Important:" -ForegroundColor Yellow
-    Write-Host "If the browser shows NET::ERR_CERT_COMMON_NAME_INVALID or a certificate name mismatch," -ForegroundColor Yellow
-    Write-Host "the server certificate is wrong for this domain. A local reset cannot fix that." -ForegroundColor Yellow
+    Write-Host "Note: If browser shows NET::ERR_CERT_COMMON_NAME_INVALID, the server certificate is wrong for this domain." -ForegroundColor Yellow
+    Write-Host "A local reset cannot fix a wrong server-side SSL certificate." -ForegroundColor Yellow
 }
 
 try {
